@@ -1,6 +1,10 @@
 from collections import defaultdict
+import json
 import os
 from typing import BinaryIO
+import multiprocessing as mp
+from functools import partial
+from datetime import datetime
 
 import regex as re
 
@@ -148,23 +152,47 @@ def merge(
     return vocab, merges
 
 
+def process_chunk_worker(start_end: tuple[int, int], input_path: str, special_tokens: list[str]) -> dict[bytes, int]:
+    """Worker function to process a single chunk of the file."""
+    start, end = start_end
+    with open(input_path, "rb") as f:
+        f.seek(start)
+        chunk = f.read(end - start).decode("utf-8", errors="ignore")
+        return pre_tokenize(chunk, special_tokens)
+
+
 def bpe_tokenizer(
         input_path: str,
         vocab_size: int,
-        special_tokens: list[str]
+        special_tokens: list[str],
+        num_processes: int | None = None
         ) -> tuple[dict[int, bytes], list[tuple[bytes, bytes]]]:
+    
+    if num_processes is None:
+        cpu_count = mp.cpu_count()
+        num_processes = cpu_count if cpu_count is not None else 4
     
     with open(input_path, "rb") as f:
         boundaries = find_chunk_boundaries(f, 100, special_tokens[0].encode("utf-8"))
+        
+        # Prepare chunk boundaries for parallel processing
+        chunk_ranges = list(zip(boundaries[:-1], boundaries[1:]))
+        
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Processing {len(chunk_ranges)} chunks using {num_processes} processes...")
+        
+        # Use multiprocessing to process chunks in parallel
+        with mp.Pool(processes=num_processes) as pool:
+            # Create partial function with fixed arguments
+            worker_func = partial(process_chunk_worker, 
+                                input_path=input_path, 
+                                special_tokens=special_tokens)
+            
+            # Process all chunks in parallel
+            chunk_results = pool.map(worker_func, chunk_ranges)
+        
+        # Merge results from all chunks
         global_counts = defaultdict(int)
-
-        for start, end in zip(boundaries[:-1], boundaries[1:]):
-            f.seek(start)
-            chunk = f.read(end - start).decode("utf-8", errors="ignore")
-            # Run pre-tokenization on your chunk and store the counts for each pre-token
-            pre_token_counts = pre_tokenize(chunk, special_tokens)
-
-            # Merge counts from all the chunks
+        for pre_token_counts in chunk_results:
             for pre_token, count in pre_token_counts.items():
                 global_counts[pre_token] += count
 
@@ -174,7 +202,51 @@ def bpe_tokenizer(
             for pre_token, count in global_counts.items()
         }
 
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Finished Pre-Tokenizing, generating vocabulary...")
         vocab = initialize_vocab(special_tokens)
         return merge(global_counts, vocab, vocab_size)
 
-# bpe_tokenizer('tokenizer_sample_text.txt', 260, ['<|endoftext|>'])
+def serialize_vocab(vocab: dict[int, bytes], output_path: str) -> None:
+    """Serialize vocabulary to a JSON file."""
+    # Convert bytes to strings for JSON serialization
+    vocab_str = {}
+    for token_id, token_bytes in vocab.items():
+        try:
+            # Try to decode as UTF-8
+            token_str = token_bytes.decode('utf-8')
+        except UnicodeDecodeError:
+            # Fall back to hex representation for non-UTF-8 bytes
+            token_str = f"<hex:{token_bytes.hex()}>"
+        vocab_str[token_str] = token_id
+    
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(vocab_str, f, indent=2, ensure_ascii=False)
+
+
+def serialize_merges(merges: list[tuple[bytes, bytes]], output_path: str) -> None:
+    """Serialize merge rules to a text file."""
+    with open(output_path, 'w', encoding='utf-8') as f:
+        for merge_pair in merges:
+            left_bytes, right_bytes = merge_pair
+            try:
+                # Try to decode as UTF-8
+                left_str = left_bytes.decode('utf-8')
+                right_str = right_bytes.decode('utf-8')
+            except UnicodeDecodeError:
+                # Fall back to hex representation for non-UTF-8 bytes
+                left_str = f"<hex:{left_bytes.hex()}>"
+                right_str = f"<hex:{right_bytes.hex()}>"
+            
+            f.write(f"{left_str} {right_str}\n")
+
+
+if __name__ == "__main__":
+    # Train the BPE tokenizer and serialize the results
+    vocab, merges = bpe_tokenizer('../TinyStoriesV2-GPT4-train.txt', 10000, ['<|endoftext|>'])
+
+    # Serialize to files
+    serialize_vocab(vocab, 'vocab.json')
+    serialize_merges(merges, 'merges.txt')
+
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Vocabulary saved to vocab.json ({len(vocab)} tokens)")
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Merge rules saved to merges.txt ({len(merges)} merges)")
