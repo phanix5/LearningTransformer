@@ -1,12 +1,131 @@
 from collections import defaultdict
 import json
 import os
-from typing import BinaryIO
+from typing import BinaryIO, Iterable, Iterator
 import multiprocessing as mp
 from functools import partial
 from datetime import datetime
 
 import regex as re
+from pydantic.v1.typing import new_type_supertype
+from torch.distributed.rpc import new_method
+
+
+def _pre_tokenize(text: str, special_tokens: list[str]) -> list[bytes]:
+    # Sort special tokens by length in descending order
+    sorted_special_tokens = sorted(special_tokens, key=len, reverse=True)
+    # Create a pattern with capturing groups to keep the special tokens
+    delimiter = "|".join(f"({re.escape(token)})" for token in sorted_special_tokens)
+    # Split by special tokens but keep them in the result
+    mini_chunks = [text] if not delimiter else re.split(delimiter, text)
+    
+    splitter_regex = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+    splitter = re.compile(splitter_regex)
+    pre_tokenized_string = []
+    
+    for mini_chunk in mini_chunks:
+        if not mini_chunk:  # Skip empty strings from split
+            continue
+        
+        # Check if this chunk is a special token
+        if mini_chunk in special_tokens:
+            # Add the special token as-is
+            pre_tokenized_string.append(mini_chunk.encode("utf-8"))
+        else:
+            # Apply the regular tokenization pattern
+            for match in splitter.finditer(mini_chunk):
+                pre_tokenized_string.append(match.group(0).encode("utf-8"))
+    
+    return pre_tokenized_string
+
+
+class Tokenizer:
+    def __init__(self, vocab: dict[int, bytes], merges: list[tuple[bytes, bytes]], special_tokens: list[str] | None = None):
+        """Construct a tokenizer from a given vocabulary, list of merges, and (optionally) a list of special tokens."""
+        self.vocab = vocab
+        self.vocab_reverse = {value: key for key, value in self.vocab.items()}
+        self.merges = merges
+        self.special_tokens = special_tokens if special_tokens is not None else []
+
+    @classmethod
+    def from_files(cls, vocab_filepath: str, merges_filepath: str, special_tokens: list[str] | None = None) -> 'Tokenizer':
+        """Class method that constructs and return a Tokenizer from a serialized vocabulary and list of merges."""
+        # Load vocabulary from JSON file
+        with open(vocab_filepath, 'r', encoding='utf-8') as f:
+            vocab_str = json.load(f)
+        
+        # Convert string->int format to int->bytes vocab format
+        vocab = {}
+        for token_str, token_id in vocab_str.items():
+            vocab[token_id] = token_str.encode('utf-8')
+        
+        # Load merges from text file
+        merges = []
+        with open(merges_filepath, 'r', encoding='utf-8') as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Split on first space to handle tokens that might contain spaces
+                parts = line.split(' ', 1)
+                if len(parts) != 2:
+                    continue
+                
+                left_str, right_str = parts
+                left_bytes = left_str.encode('utf-8')
+                right_bytes = right_str.encode('utf-8')
+                merges.append((left_bytes, right_bytes))
+        
+        return cls(vocab, merges, special_tokens)
+
+    def _encode_token(self, pre_token: bytes) -> list[int]:
+        # special token are already in vocab, so return them as is
+        if pre_token in self.vocab_reverse:
+            return [self.vocab_reverse[pre_token]]
+
+        token = list(bytes([b]) for b in pre_token)
+        for merge in self.merges:
+            new_token = []  # Create a new empty list for each merge
+            i = 0
+            while i < len(token):
+                if i < len(token) - 1 and token[i] == merge[0] and token[i + 1] == merge[1]:
+                    new_token.append(token[i] + token[i + 1])
+                    i += 2
+                else:
+                    new_token.append(token[i])
+                    i += 1
+            token = new_token  # Update token for next iteration
+        return [self.vocab_reverse[item] for item in token]
+
+
+    def encode(self, text: str) -> list[int]:
+        """Encode an input text into a sequence of token IDs."""
+        pre_tokenized_string = _pre_tokenize(text, self.special_tokens)
+        encoding = []
+        for token in pre_tokenized_string:
+            encoding.extend(self._encode_token(token))
+        return encoding
+
+    def encode_iterable(self, iterable: Iterable[str]) -> Iterator[int]:
+        """Given an iterable of strings (e.g., a Python file handle), return a generator that lazily yields token IDs."""
+        for text in iterable:
+            # Pre-tokenize the text
+            pre_tokenized_string = _pre_tokenize(text, self.special_tokens)
+            
+            # Encode each pre-token and yield individual token IDs
+            for pre_token in pre_tokenized_string:
+                token_ids = self._encode_token(pre_token)
+                for token_id in token_ids:
+                    yield token_id
+
+    def decode(self, ids: list[int]) -> str:
+        """Decode a sequence of token IDs into text."""
+        encoded_text = b''
+        for token_id in ids:
+            encoded_text += self.vocab[token_id]
+        return encoded_text.decode("utf-8", errors="replace")
+
 
 def find_chunk_boundaries(
     file: BinaryIO, 
@@ -58,14 +177,25 @@ def find_chunk_boundaries(
 
 
 def pre_tokenize(chunk: str, special_tokens: list[str]) -> dict[bytes, int]:
-    delimiter = "|".join(re.escape(token) for token in special_tokens)
-    mini_chunks = re.split(delimiter, chunk)
+    # Sort special tokens by length in descending order
+    sorted_special_tokens = sorted(special_tokens, key=len, reverse=True)
+    # Create a pattern with capturing groups to keep the special tokens
+    delimiter = "|".join(re.escape(token) for token in sorted_special_tokens)
+    # Split by special tokens but keep them in the result
+    mini_chunks = [chunk] if not delimiter else re.split(delimiter, chunk)
+    
     splitter_regex = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
     splitter = re.compile(splitter_regex)
     pre_token_counts = defaultdict(int)
+    
     for mini_chunk in mini_chunks:
+        if not mini_chunk:  # Skip empty strings from split
+            continue
+
+        # Apply the regular tokenization pattern
         for match in splitter.finditer(mini_chunk):
             pre_token_counts[match.group(0).encode("utf-8")] += 1
+    
     return pre_token_counts
 
 def initialize_vocab(special_tokens: list[str]) -> dict[int, bytes]:
@@ -109,6 +239,7 @@ def merge(
             pair_counts[pair] += count
 
     while len(vocab) < vocab_size:
+        # print(f"Current vocabulary size: {len(vocab)}")
         # Find best pair more concisely
         # Select pair with the highest count; among ties, pick lexicographically the largest
         # Key puts count first (x[1]) so max() compares by count, then by pair (x[0])
@@ -173,7 +304,7 @@ def bpe_tokenizer(
         num_processes = cpu_count if cpu_count is not None else 4
     
     with open(input_path, "rb") as f:
-        boundaries = find_chunk_boundaries(f, 100, special_tokens[0].encode("utf-8"))
+        boundaries = find_chunk_boundaries(f, 1000, special_tokens[0].encode("utf-8"))
         
         # Prepare chunk boundaries for parallel processing
         chunk_ranges = list(zip(boundaries[:-1], boundaries[1:]))
@@ -242,7 +373,7 @@ def serialize_merges(merges: list[tuple[bytes, bytes]], output_path: str) -> Non
 
 if __name__ == "__main__":
     # Train the BPE tokenizer and serialize the results
-    vocab, merges = bpe_tokenizer('../TinyStoriesV2-GPT4-train.txt', 10000, ['<|endoftext|>'])
+    vocab, merges = bpe_tokenizer('../data/owt_train.txt', 32000, ['<|endoftext|>'])
 
     # Serialize to files
     serialize_vocab(vocab, 'vocab.json')
