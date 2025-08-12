@@ -10,7 +10,9 @@ import torch
 from torch import Tensor
 
 from cs336_basics.bpe_tokenizer import bpe_tokenizer, Tokenizer
-from cs336_basics.transformer import Linear, Embedding
+from cs336_basics.transformer import Linear, Embedding, RMSNorm, SwiGLU, softmax, scaled_dot_product_attention, \
+    MultiHeadAttention
+
 
 def run_linear(
     d_in: int,
@@ -87,7 +89,12 @@ def run_swiglu(
     # swiglu.w1.weight.data = w1_weight
     # swiglu.w2.weight.data = w2_weight
     # swiglu.w3.weight.data = w3_weight
-    raise NotImplementedError
+    swiglu = SwiGLU(d_model, d_ff, w1_weight.device, w1_weight.dtype)
+    swiglu.linear1.load_state_dict({'weight': w1_weight})
+    swiglu.linear2.load_state_dict({'weight': w2_weight})
+    swiglu.linear3.load_state_dict({'weight': w3_weight})
+
+    return swiglu.forward(in_features)
 
 
 def run_scaled_dot_product_attention(
@@ -108,7 +115,7 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
-    raise NotImplementedError
+    return scaled_dot_product_attention(Q, K, V, mask)
 
 
 def run_multihead_self_attention(
@@ -142,7 +149,11 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    qkv_combined = torch.cat((q_proj_weight, k_proj_weight, v_proj_weight), dim=0)
+    mha = MultiHeadAttention(d_model, num_heads, device=None, dtype=torch.float)
+    mha.attention_weights.load_state_dict({'weight': qkv_combined})
+    mha.output_weights.load_state_dict({'weight': o_proj_weight})
+    return mha.forward(in_features)
 
 
 def run_multihead_self_attention_with_rope(
@@ -382,7 +393,9 @@ def run_rmsnorm(
         Float[Tensor,"... d_model"]: Tensor of with the same shape as `in_features` with the output of running
         RMSNorm of the `in_features`.
     """
-    raise NotImplementedError
+    rms_norm = RMSNorm(d_model, eps, weights.device, weights.dtype)
+    rms_norm.load_state_dict({'gain': weights})
+    return rms_norm.forward(in_features)
 
 
 def run_silu(in_features: Float[Tensor, " ..."]) -> Float[Tensor, " ..."]:
@@ -435,7 +448,7 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
-    raise NotImplementedError
+    return softmax(in_features, dim)
 
 
 def run_cross_entropy(
