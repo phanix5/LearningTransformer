@@ -11,7 +11,7 @@ from torch import Tensor
 
 from cs336_basics.bpe_tokenizer import bpe_tokenizer, Tokenizer
 from cs336_basics.transformer import Linear, Embedding, RMSNorm, SwiGLU, softmax, scaled_dot_product_attention, \
-    MultiHeadAttention
+    MultiHeadAttention, RotaryPositionalEmbedding, MultiHeadAttentionRope, TransformerBlock, TransformerLM
 
 
 def run_linear(
@@ -193,7 +193,11 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
-    raise NotImplementedError
+    qkv_combined = torch.cat((q_proj_weight, k_proj_weight, v_proj_weight), dim=0)
+    mhar = MultiHeadAttentionRope(d_model, num_heads, theta, max_seq_len, device=None, dtype=torch.float)
+    mhar.attention_weights.load_state_dict({'weight': qkv_combined})
+    mhar.output_weights.load_state_dict({'weight': o_proj_weight})
+    return mhar.forward(in_features, token_positions)
 
 
 def run_rope(
@@ -215,7 +219,8 @@ def run_rope(
     Returns:
         Float[Tensor, " ... sequence_length d_k"]: Tensor with RoPEd input.
     """
-    raise NotImplementedError
+    rope = RotaryPositionalEmbedding(theta, d_k, max_seq_len)
+    return rope.forward(in_query_or_key, token_positions)
 
 
 def run_transformer_block(
@@ -288,7 +293,8 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
-    raise NotImplementedError
+    block = TransformerBlock(d_model, num_heads, d_ff, max_seq_len, theta, weights)
+    return block.forward(in_features)
 
 
 def run_transformer_lm(
@@ -370,7 +376,8 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
-    raise NotImplementedError
+    transformer = TransformerLM(vocab_size, d_model, context_length, num_layers, num_heads, d_ff, rope_theta, weights)
+    return transformer.forward(in_indices)
 
 
 def run_rmsnorm(

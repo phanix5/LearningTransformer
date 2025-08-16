@@ -19,6 +19,24 @@ uv run <python_file_path>
 ```
 and the environment will be automatically solved and activated when necessary.
 
+### Jupyter Notebook
+
+We've included a `playground.ipynb` notebook in the root directory for experimenting with the CS336 basics implementation.
+
+To run the notebook:
+```sh
+# Option 1: Use the provided script
+./run_notebook.sh
+
+# Option 2: Run directly with uv
+uv run jupyter lab playground.ipynb
+
+# Option 3: Open Jupyter Lab without specifying a file
+uv run jupyter lab
+```
+
+The notebook will automatically use the uv-managed environment with all project dependencies.
+
 ### Run unit tests
 
 
