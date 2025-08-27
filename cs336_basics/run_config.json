@@ -1,0 +1,46 @@
+{
+    "model_config": {
+        "vocab_size": 10000,
+        "context_length": 256,
+        "d_model": 512,
+        "d_ff": 1344,
+        "theta": 10000,
+        "num_layers": 4,
+        "num_heads": 16
+    },
+    "optim_config": {
+        "learning_rate": 3e-4,
+        "betas": [0.9, 0.999],
+        "eps": 1e-8,
+        "weight_decay": 0.1
+    },
+    "lr_schedule": {
+        "type": "cosine",
+        "warmup_iters": 2000,
+        "cosine_iters": 20000,
+        "min_lr": 3e-5,
+        "max_lr": 3e-4
+    },
+    "tokenizer_config": {
+        "regenerate_vocab": false,
+        "special_tokens": ["<|endoftext|>"],
+        "vocab_size": 10000
+    },
+    "training": {
+        "batch_size": 64,
+        "total_tokens": 327680000,
+        "log_interval": 50,
+        "eval_interval": 500,
+        "eval_iters": 50,
+        "checkpoint_interval": 1000,
+        "grad_clip": 1.0,
+        "output_dir": "/Users/pmoganti/CS336/assignment1-basics/data/checkpoints"
+    },
+    "train_file": "/Users/pmoganti/CS336/assignment1-basics/TinyStoriesV2-GPT4-train.txt",
+    "data_file": "/Users/pmoganti/CS336/assignment1-basics/TinyStoriesV2-GPT4-train.txt",
+    "wandb": {
+        "enabled": false,
+        "project": "cs336-a1",
+        "run_name": "tinystories-17M"
+    }
+}

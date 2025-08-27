@@ -44,7 +44,7 @@ class Tokenizer:
         """Construct a tokenizer from a given vocabulary, list of merges, and (optionally) a list of special tokens."""
         self.vocab = vocab
         self.vocab_reverse = {value: key for key, value in self.vocab.items()}
-        self.merges = merges
+        self.merges = {pair: rank for rank, pair in enumerate(merges)}
         self.special_tokens = special_tokens if special_tokens is not None else []
 
     @classmethod
@@ -57,7 +57,8 @@ class Tokenizer:
         # Convert string->int format to int->bytes vocab format
         vocab = {}
         for token_str, token_id in vocab_str.items():
-            vocab[token_id] = token_str.encode('utf-8')
+            # Expect hex-only serialized tokens
+            vocab[token_id] = bytes.fromhex(token_str)
         
         # Load merges from text file
         merges = []
@@ -73,30 +74,59 @@ class Tokenizer:
                     continue
                 
                 left_str, right_str = parts
-                left_bytes = left_str.encode('utf-8')
-                right_bytes = right_str.encode('utf-8')
+                # Expect hex-only serialized merges
+                left_bytes = bytes.fromhex(left_str)
+                right_bytes = bytes.fromhex(right_str)
                 merges.append((left_bytes, right_bytes))
         
         return cls(vocab, merges, special_tokens)
 
+    
     def _encode_token(self, pre_token: bytes) -> list[int]:
         # special token are already in vocab, so return them as is
         if pre_token in self.vocab_reverse:
             return [self.vocab_reverse[pre_token]]
 
         token = list(bytes([b]) for b in pre_token)
-        for merge in self.merges:
-            new_token = []  # Create a new empty list for each merge
-            i = 0
-            while i < len(token):
-                if i < len(token) - 1 and token[i] == merge[0] and token[i + 1] == merge[1]:
-                    new_token.append(token[i] + token[i + 1])
-                    i += 2
+        while True:
+            j = 0
+            curr_best_rank = len(self.merges)
+            curr_best_merge = None
+            while j < len(token)-1:
+                merge_rank = self.merges.get((token[j], token[j+1]))
+                if merge_rank is not None and merge_rank < curr_best_rank:
+                    curr_best_rank = merge_rank
+                    curr_best_merge = (token[j], token[j+1])
+                j+=1
+            
+            if curr_best_merge is None:
+               break
+
+            # merge the best pair
+            new_token = []
+            j=0
+            while j < len(token):
+                if j < len(token) - 1 and token[j] == curr_best_merge[0] and token[j + 1] == curr_best_merge[1]:
+                    new_token.append(token[j] + token[j + 1])
+                    j += 2
                 else:
-                    new_token.append(token[i])
-                    i += 1
+                    new_token.append(token[j])
+                    j += 1
             token = new_token  # Update token for next iteration
         return [self.vocab_reverse[item] for item in token]
+                    
+        # for merge in self.merges:
+        #     new_token = []  # Create a new empty list for each merge
+        #     i = 0
+        #     while i < len(token):
+        #         if i < len(token) - 1 and token[i] == merge[0] and token[i + 1] == merge[1]:
+        #             new_token.append(token[i] + token[i + 1])
+        #             i += 2
+        #         else:
+        #             new_token.append(token[i])
+        #             i += 1
+        #     token = new_token  # Update token for next iteration
+        # return [self.vocab_reverse[item] for item in token]
 
 
     def encode(self, text: str) -> list[int]:
@@ -280,6 +310,7 @@ def merge(
         # Add the new merged token to the vocabulory
         vocab[max(vocab.keys()) + 1] = best_pair[0] + best_pair[1]
 
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [BPE Tokenizer] Finished Tokenizing, saving voacb and merges")
     return vocab, merges
 
 
@@ -302,6 +333,8 @@ def bpe_tokenizer(
     if num_processes is None:
         cpu_count = mp.cpu_count()
         num_processes = cpu_count if cpu_count is not None else 4
+
+    print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [BPE Tokenizer] Preparing vocab of size {vocab_size} using BPE Tokenizer")
     
     with open(input_path, "rb") as f:
         boundaries = find_chunk_boundaries(f, 1000, special_tokens[0].encode("utf-8"))
@@ -309,7 +342,7 @@ def bpe_tokenizer(
         # Prepare chunk boundaries for parallel processing
         chunk_ranges = list(zip(boundaries[:-1], boundaries[1:]))
         
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Processing {len(chunk_ranges)} chunks using {num_processes} processes...")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [BPE Tokenizer] Processing {len(chunk_ranges)} chunks using {num_processes} processes...")
         
         # Use multiprocessing to process chunks in parallel
         with mp.Pool(processes=num_processes) as pool:
@@ -333,7 +366,7 @@ def bpe_tokenizer(
             for pre_token, count in global_counts.items()
         }
 
-        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Finished Pre-Tokenizing, generating vocabulary...")
+        print(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] [BPE Tokenizer] Finished Pre-Tokenizing, generating vocabulary...")
         vocab = initialize_vocab(special_tokens)
         return merge(global_counts, vocab, vocab_size)
 
@@ -342,12 +375,8 @@ def serialize_vocab(vocab: dict[int, bytes], output_path: str) -> None:
     # Convert bytes to strings for JSON serialization
     vocab_str = {}
     for token_id, token_bytes in vocab.items():
-        try:
-            # Try to decode as UTF-8
-            token_str = token_bytes.decode('utf-8')
-        except UnicodeDecodeError:
-            # Fall back to hex representation for non-UTF-8 bytes
-            token_str = f"<hex:{token_bytes.hex()}>"
+        # Always serialize as hex (no spaces), regardless of UTF-8 compatibility
+        token_str = token_bytes.hex()
         vocab_str[token_str] = token_id
     
     with open(output_path, 'w', encoding='utf-8') as f:
@@ -359,15 +388,9 @@ def serialize_merges(merges: list[tuple[bytes, bytes]], output_path: str) -> Non
     with open(output_path, 'w', encoding='utf-8') as f:
         for merge_pair in merges:
             left_bytes, right_bytes = merge_pair
-            try:
-                # Try to decode as UTF-8
-                left_str = left_bytes.decode('utf-8')
-                right_str = right_bytes.decode('utf-8')
-            except UnicodeDecodeError:
-                # Fall back to hex representation for non-UTF-8 bytes
-                left_str = f"<hex:{left_bytes.hex()}>"
-                right_str = f"<hex:{right_bytes.hex()}>"
-            
+            # Always serialize as hex (no spaces), regardless of UTF-8 compatibility
+            left_str = left_bytes.hex()
+            right_str = right_bytes.hex()
             f.write(f"{left_str} {right_str}\n")
 
 
