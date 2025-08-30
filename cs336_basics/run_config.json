@@ -1,5 +1,5 @@
 {
-    "mode": "eval",
+    "mode": "train",
     "model_config": {
         "vocab_size": 10000,
         "context_length": 256,
@@ -37,8 +37,8 @@
         "grad_clip": 1.0,
         "output_dir": "/Users/pmoganti/CS336/assignment1-basics/data/checkpoints"
     },
-    "train_file": "/Users/pmoganti/CS336/assignment1-basics/TinyStoriesV2-GPT4-train.txt",
-    "data_file": "/Users/pmoganti/CS336/assignment1-basics/TinyStoriesV2-GPT4-train.txt",
+    "train_file": "/workspace/LearningTransformer/TinyStoriesV2-GPT4-train.txt",
+    "data_file": "/workspace/LearningTransformer/TinyStoriesV2-GPT4-train.txt",
     "wandb": {
         "enabled": true,
         "project": "cs336-a1",
