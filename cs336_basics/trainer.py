@@ -212,6 +212,124 @@ def _maybe_init_wandb(cfg: dict) -> typing.Any:
         return None
 
 
+def _find_latest_checkpoint(output_dir: str) -> str | None:
+    try:
+        if not os.path.isdir(output_dir):
+            return None
+        candidates = []
+        for name in os.listdir(output_dir):
+            if not name.startswith("ckpt_step_") or not name.endswith(".pt"):
+                continue
+            middle = name[len("ckpt_step_"):-len(".pt")]
+            try:
+                step = int(middle)
+                candidates.append((step, os.path.join(output_dir, name)))
+            except ValueError:
+                continue
+        if not candidates:
+            return None
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        return candidates[0][1]
+    except Exception:
+        return None
+
+
+def _get_eos_token_id(tokenizer: Tokenizer) -> int | None:
+    try:
+        eos = None
+        for t in tokenizer.special_tokens:
+            if t.strip() == "<|endoftext|>":
+                eos = t
+                break
+        if eos is None and tokenizer.special_tokens:
+            eos = tokenizer.special_tokens[0]
+        if eos is None:
+            return None
+        token_bytes = eos.encode("utf-8")
+        return tokenizer.vocab_reverse.get(token_bytes)
+    except Exception:
+        return None
+
+
+def eval_interactive(config: dict) -> None:
+    device = _select_device()
+    _log('Trainer', f"Using device: {device}")
+
+    # Tokenizer setup
+    _log('Trainer', 'Preparing tokenizer vocab and merges')
+    vocab_path, merges_path = get_vocab(config)
+    tokenizer = Tokenizer.from_files(vocab_path, merges_path, config['tokenizer_config']['special_tokens'])
+
+    # Model config
+    mcfg = config.get('model_config', {})
+    vocab_size = int(mcfg.get('vocab_size', 10000))
+    context_length = int(mcfg.get('context_length', 256))
+    d_model = int(mcfg.get('d_model', 512))
+    d_ff = int(mcfg.get('d_ff', 1344))
+    theta = float(mcfg.get('theta', 10000))
+    num_layers = int(mcfg.get('num_layers', 4))
+    num_heads = int(mcfg.get('num_heads', 16))
+
+    _log('Trainer', f"Initializing model for eval: layers={num_layers}, heads={num_heads}, d_model={d_model}, d_ff={d_ff}")
+    model = TransformerLM(vocab_size, d_model, context_length, num_layers, num_heads, d_ff, theta)
+    model.to(device)
+
+    # Load checkpoint: prefer explicit eval.checkpoint_path, else training.resume_path, else latest in training.output_dir
+    ecfg = config.get('eval', {}) or {}
+    tcfg = config.get('training', {}) or {}
+    ckpt_path = ecfg.get('checkpoint_path') or tcfg.get('resume_path') or _find_latest_checkpoint(tcfg.get('output_dir', os.path.join(get_data_dir_path(), 'checkpoints')))
+    if ckpt_path and os.path.exists(ckpt_path):
+        try:
+            state = torch.load(ckpt_path, map_location='cpu')
+            model.load_state_dict(state['model_state'])
+            _log('Trainer', f"Loaded checkpoint for eval: {ckpt_path}")
+        except Exception as e:
+            _log('Trainer', f"Failed to load checkpoint '{ckpt_path}': {e}")
+    else:
+        _log('Trainer', 'No checkpoint found; evaluating with randomly initialized weights')
+
+    # Eval sampling parameters
+    temperature = float(ecfg.get('temperature', 0.7))
+    top_p = ecfg.get('top_p')
+    top_p = float(top_p) if top_p is not None else None
+    max_new_tokens = int(ecfg.get('max_new_tokens', 128))
+    eos_token_id = _get_eos_token_id(tokenizer)
+
+    _log('Trainer', 'Entering interactive eval mode. Type \'/exit\' or \'/quit\' to leave.')
+    try:
+        while True:
+            try:
+                user = input('> ').strip()
+            except EOFError:
+                break
+            if user == '':
+                continue
+            if user.lower() in {"/exit", "/quit", "exit", "quit"}:
+                break
+
+            prefix_ids = tokenizer.encode(user)
+            if not prefix_ids:
+                print("")
+                continue
+
+            prefix_tensor = torch.tensor(prefix_ids, dtype=torch.long, device=device).unsqueeze(0)
+            with torch.no_grad():
+                out_ids = model.generate(
+                    prefix_tensor,
+                    max_new_tokens=max_new_tokens,
+                    temperature=temperature,
+                    top_p=top_p,
+                    eos_token_id=eos_token_id,
+                )
+            # Decode only the generated continuation
+            gen_only = out_ids[0].tolist()[len(prefix_ids):]
+            text = tokenizer.decode(gen_only)
+            print(text)
+    except KeyboardInterrupt:
+        pass
+    _log('Trainer', 'Exiting interactive eval mode')
+
+
 def train(config: dict):
     device = _select_device()
     _log('Trainer', f"Using device: {device}")
@@ -367,7 +485,11 @@ if __name__ == '__main__':
         config_file = os.path.join(os.path.dirname(__file__), 'run_config.json')
     with open(config_file, 'r') as f:
         config = json.load(f)
-    train(config)
+    mode = (config.get('mode') or 'train').lower()
+    if mode == 'eval':
+        eval_interactive(config)
+    else:
+        train(config)
 
 
 
