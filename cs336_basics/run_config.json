@@ -1,5 +1,10 @@
 {
-    "mode": "train",
+    "trainer_config": {
+        "mode": "train",
+        "recreate_vocab": false,
+        "retokenize_data": false,
+        "data_file": "/workspace/LearningTransformer/TinyStoriesV2-GPT4-train.txt"
+    },
     "model_config": {
         "vocab_size": 10000,
         "context_length": 256,
@@ -23,7 +28,6 @@
         "max_lr": 3e-4
     },
     "tokenizer_config": {
-        "regenerate_vocab": false,
         "special_tokens": ["<|endoftext|>"],
         "vocab_size": 10000
     },
@@ -34,11 +38,8 @@
         "eval_interval": 500,
         "eval_iters": 50,
         "checkpoint_interval": 1000,
-        "grad_clip": 1.0,
-        "output_dir": "/Users/pmoganti/CS336/assignment1-basics/data/checkpoints"
+        "grad_clip": 1.0
     },
-    "train_file": "/workspace/LearningTransformer/TinyStoriesV2-GPT4-train.txt",
-    "data_file": "/workspace/LearningTransformer/TinyStoriesV2-GPT4-train.txt",
     "wandb": {
         "enabled": true,
         "project": "cs336-a1",

@@ -152,8 +152,10 @@ def get_vocab(config: dict) -> tuple[str, str]:
     has_bpe_vocab = os.path.exists(bpe_vocab_path)
     has_bpe_merges = os.path.exists(bpe_merges_path)
 
-    if not has_bpe_merges or not has_bpe_vocab or config['tokenizer_config']['regenerate_vocab']:
-        input_path = config['data_file']
+    if not has_bpe_merges or not has_bpe_vocab or config['trainer_config']['recreate_vocab']:
+        # Read input path strictly from trainer_config
+        tcfg = config['trainer_config']
+        input_path = tcfg['data_file']
         vocab_size = config['tokenizer_config']['vocab_size']
         special_tokens = config['tokenizer_config']['special_tokens']
         vocab, merges = bpe_tokenizer(input_path, vocab_size, special_tokens)
@@ -163,16 +165,16 @@ def get_vocab(config: dict) -> tuple[str, str]:
 
 def get_data_dir_path() -> str:
     repo_root = os.path.dirname(os.path.dirname(__file__))
-    return os.path.join(repo_root, 'data')
+    data_path = os.path.join(repo_root, 'data')
+    if not os.path.exists(data_path):
+        os.makedirs(data_path, exist_ok=True)
+    return data_path
 
 def _select_device() -> str:
     if torch.cuda.is_available():
-        _log('Trainer', f"Using Device: Cuda")
         return 'cuda'
     if torch.backends.mps.is_available():
-        _log('Trainer', f"Using Device: MPS")
         return 'mps'
-    _log('Trainer', f"Using Device: CPU")
     return 'cpu'
 
 
@@ -274,10 +276,14 @@ def eval_interactive(config: dict) -> None:
     model = TransformerLM(vocab_size, d_model, context_length, num_layers, num_heads, d_ff, theta)
     model.to(device)
 
-    # Load checkpoint: prefer explicit eval.checkpoint_path, else training.resume_path, else latest in training.output_dir
+    # Load checkpoint: prefer explicit eval.checkpoint_path, else training.resume_path, else latest in resolved training.output_dir
     ecfg = config.get('eval', {}) or {}
     tcfg = config.get('training', {}) or {}
-    ckpt_path = ecfg.get('checkpoint_path') or tcfg.get('resume_path') or _find_latest_checkpoint(tcfg.get('output_dir', os.path.join(get_data_dir_path(), 'checkpoints')))
+    data_dir = get_data_dir_path()
+    raw_out = tcfg.get('output_dir')
+    default_out = os.path.join(data_dir, 'checkpoints')
+    resolved_out = os.path.join(data_dir, str(raw_out).lstrip(os.sep)) if raw_out else default_out
+    ckpt_path = ecfg.get('checkpoint_path') or tcfg.get('resume_path') or _find_latest_checkpoint(resolved_out)
     if ckpt_path and os.path.exists(ckpt_path):
         try:
             state = torch.load(ckpt_path, map_location='cpu')
@@ -339,7 +345,9 @@ def train(config: dict):
     vocab_path, merges_path = get_vocab(config)
     tokenizer = Tokenizer.from_files(vocab_path, merges_path, config['tokenizer_config']['special_tokens'])
 
-    train_text_path = config.get('train_file', config.get('data_file'))
+    # Prefer explicit train_file; else use trainer_config.data_file
+    tcfg_all = config['trainer_config']
+    train_text_path = config.get('train_file', tcfg_all['data_file'])
     valid_text_path = config.get('valid_file')
     _log('Trainer', f"Tokenizing training corpus: {train_text_path}")
     train_tokens_path = _tokenize_file(train_text_path, tokenizer)
@@ -403,7 +411,12 @@ def train(config: dict):
     eval_iters = int(tcfg.get('eval_iters', 50))
     ckpt_interval = int(tcfg.get('checkpoint_interval', 500))
     grad_clip = float(tcfg.get('grad_clip', 1.0))
-    output_dir = tcfg.get('output_dir', os.path.join(get_data_dir_path(), 'checkpoints'))
+    data_dir = get_data_dir_path()
+    raw_output_dir = tcfg.get('output_dir')
+    if raw_output_dir:
+        output_dir = os.path.join(data_dir, str(raw_output_dir).lstrip(os.sep))
+    else:
+        output_dir = os.path.join(data_dir, 'checkpoints')
     os.makedirs(output_dir, exist_ok=True)
     _log('Trainer', f"Output directory: {output_dir}")
 
@@ -485,7 +498,9 @@ if __name__ == '__main__':
         config_file = os.path.join(os.path.dirname(__file__), 'run_config.json')
     with open(config_file, 'r') as f:
         config = json.load(f)
-    mode = (config.get('mode') or 'train').lower()
+    # Mode resides in trainer_config.mode
+    _tcfg = config['trainer_config']
+    mode = (_tcfg.get('mode') or 'train').lower()
     if mode == 'eval':
         eval_interactive(config)
     else:
