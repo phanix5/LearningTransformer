@@ -463,13 +463,15 @@ def train(config: dict):
             iter_time = now - last_log_time
             last_log_time = now
             avg_loss = running_loss / log_interval
+            avg_ppl = math.exp(avg_loss)
             tokens_per_iter = batch_size * context_length
             toks_per_s = tokens_per_iter * log_interval / max(iter_time, 1e-9)
-            msg = f"step {step+1}/{max_steps} | loss {avg_loss:.4f} | lr {lr:.3e} | {toks_per_s:.0f} tok/s"
+            msg = f"step {step+1}/{max_steps} | loss {avg_loss:.4f} | ppl {avg_ppl:.2f} | lr {lr:.3e} | {toks_per_s:.0f} tok/s"
             _log('Trainer', msg)
             if wandb is not None:
                 wandb.log({
                     'train/loss': avg_loss,
+                    'train/perplexity': avg_ppl,
                     'train/lr': lr,
                     'speed/tokens_per_s': toks_per_s,
                     'progress/step': step + 1,
@@ -479,9 +481,10 @@ def train(config: dict):
 
         if val_tokens is not None and ((step + 1) % eval_interval == 0):
             val_loss = _evaluate(model, val_tokens, batch_size, context_length, device, eval_iters)
-            _log('Trainer', f"eval step {step+1}: val_loss {val_loss:.4f}")
+            val_ppl = math.exp(val_loss)
+            _log('Trainer', f"eval step {step+1}: val_loss {val_loss:.4f} | val_ppl {val_ppl:.2f}")
             if wandb is not None:
-                wandb.log({'eval/loss': val_loss}, step=step+1)
+                wandb.log({'eval/loss': val_loss, 'eval/perplexity': val_ppl}, step=step+1)
 
         if (step + 1) % ckpt_interval == 0 or (step + 1) == max_steps:
             ckpt_path = os.path.join(output_dir, f"ckpt_step_{step+1}.pt")
