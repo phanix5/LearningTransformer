@@ -348,7 +348,7 @@ def train(config: dict):
     # Prefer explicit train_file; else use trainer_config.data_file
     tcfg_all = config['trainer_config']
     train_text_path = config.get('train_file', tcfg_all['data_file'])
-    valid_text_path = config.get('valid_file')
+    valid_text_path = config.get('valid_file', tcfg_all['valid_file'])
     _log('Trainer', f"Tokenizing training corpus: {train_text_path}")
     train_tokens_path = _tokenize_file(train_text_path, tokenizer)
     val_tokens_path = None
