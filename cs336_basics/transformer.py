@@ -452,7 +452,7 @@ class TransformerLM(nn.Module):
       weights (dict[str, torch.Tensor] | None): Optional state dict with weight tensors.
     """
     def __init__(self,
-                 voacb_size: int,
+                 vocab_size: int,
                  d_model: int, 
                  context_length: int,
                  num_layers: int,
@@ -464,12 +464,12 @@ class TransformerLM(nn.Module):
                  dtype: torch.dtype | None = None):
         super().__init__()
         self.context_length = context_length
-        self.embedding = Embedding(voacb_size, d_model, device=device, dtype=dtype)
+        self.embedding = Embedding(vocab_size, d_model, device=device, dtype=dtype)
         self.transformer_blocks = nn.ModuleList(
             [TransformerBlock(d_model, num_heads, d_ff, context_length, theta, device=device, dtype=dtype) for i in range(num_layers)]
         )
         self.post_norm = RMSNorm(d_model, device=device, dtype=dtype)
-        self.output = Linear(d_model, voacb_size, device=device, dtype=dtype)
+        self.output = Linear(d_model, vocab_size, device=device, dtype=dtype)
 
         if weights is not None:
             # Token embeddings

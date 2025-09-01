@@ -3,7 +3,8 @@
         "mode": "train",
         "recreate_vocab": false,
         "retokenize_data": false,
-        "data_file": "/workspace/LearningTransformer/TinyStoriesV2-GPT4-train.txt"
+        "data_file": "/workspace/LearningTransformer/TinyStoriesV2-GPT4-train.txt",
+        "valid_file": "/workspace/LearningTransformer/TinyStoriesV2-GPT4-valid.txt"
     },
     "model_config": {
         "vocab_size": 10000,
