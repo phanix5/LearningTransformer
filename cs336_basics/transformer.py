@@ -433,8 +433,8 @@ class TransformerBlock(nn.Module):
         seq_len = residual.shape[-2]
         batch_size = residual.shape[0]
         token_positions = torch.arange(seq_len, device=residual.device).unsqueeze(0).expand(batch_size, -1)
-        x = residual + self.mha.forward(self.pre_mha_norm.forward(residual), token_positions)
-        x = x + self.ff.forward(self.pre_ff_norm.forward(x))
+        x = residual + self.mha.forward(residual, token_positions)
+        x = x + self.ff.forward(x)
         return x
 
 class TransformerLM(nn.Module):
@@ -535,7 +535,7 @@ class TransformerLM(nn.Module):
         x = embeddings
         for block in self.transformer_blocks:
             x = block.forward(x)
-        x = self.post_norm.forward(x)
+        # x = self.post_norm.forward(x)
         logits = self.output.forward(x)
         return logits
 
